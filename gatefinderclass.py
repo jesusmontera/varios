@@ -6,6 +6,23 @@ from cirq import is_hermitian,validate_density_matrix,unitary
 
 from dmcx import testfinderhos,tracenumba
 from gatematrixs import IdentityGate,cxgate,HadamardGate1Qbit,HadamardGate,XGate
+from qiskit import QuantumCircuit
+from qiskit.circuit.random import random_circuit
+
+def is_pos_def(x):
+    return np.all(np.linalg.eigvals(x) > 0)
+
+@jit(nopython = True)
+def closest_unitary(A:np.ndarray):
+    #https://michaelgoerz.net/notes/finding-the-closest-unitary-for-a-given-matrix/    """
+
+    #V, __, Wh = scipy.linalg.svd(A)
+    V, __, Wh = np.linalg.svd(A, full_matrices=False)
+    #U = np.matrix(V.dot(Wh))
+    U = V.dot(Wh)
+    return U
+
+
 
 def CompareRHOS(rhoA,rhoB,lindexs):
     print("\n CompareRHOS dif = ",sum(np.abs(rhoA-rhoB)))
@@ -13,18 +30,6 @@ def CompareRHOS(rhoA,rhoB,lindexs):
     for i in range(len(lindexs)):
         x = lindexs[i]        
         print(x,"dif",round(abs(rhoA[x]-rhoB[x]),5))
-
-
-
-
-@jit(nopython = True)   
-def evolverho(rho:np.ndarray,gate : np.ndarray):
-    gate_transpose = gate.transpose()
-    
-    # dot same as matmul but for numba
-    m = np.dot(gate, rho) 
-    m = np.dot(m, np.conjugate(gate_transpose)) 
-    return m
 
 def getspacegrid(gridsize,cellsize,centerval):
 
@@ -39,9 +44,21 @@ def getspacegrid(gridsize,cellsize,centerval):
         n+=1
     return grid
 
+
+
+@jit(nopython = True)   
+def evolverho(rho:np.ndarray,gate : np.ndarray):
+    gate_transpose = gate.transpose()
+    
+    # dot same as matmul but for numba
+    m = np.dot(gate, rho) 
+    m = np.dot(m, np.conjugate(gate_transpose)) 
+    return m
+
+
 class gatefinder:
     # gridsize must be odd
-    def __init__(self,minval=-1,maxval=1,dims=8,gridsize=5):
+    def __init__(self,minval=-1,maxval=1,dims=6,gridsize=7):
                 
         
         self.dims = dims        
@@ -53,6 +70,7 @@ class gatefinder:
         self.zoom=0
         self.gate2x2=None
         self.makegrid()
+        
     def makegrid(self):
         self.grid=np.zeros([self.dims,self.gridsize],dtype=np.float32)
         spacesize=self.maxval - self.minval
@@ -76,17 +94,16 @@ class gatefinder:
         
         print("\nmindist search",self.mindist)
         return self.gate2x2
-
+    
+    
     @staticmethod
     @jit(nopython = True)   
     def searchnumba1(rhobefore:np.ndarray, vectorfind: np.ndarray, n:int,grid: np.ndarray , distbreak : int):
         
-        I=np.zeros((2,2),dtype=np.complex128)    
-        I [0][0]=  1+0j
-        I [1][1]=  1+0j 
+        I=IdentityGate()
         gate2x2= np.zeros((2,2),dtype = np.complex128)        
         counter=0
-        best=[0,0,0,0,0,0,0,0]        
+        best=[0,0,0,0,0,0]        
         mindist=100000.
         for a in range(n):        
             for b in range(n):
@@ -94,34 +111,34 @@ class gatefinder:
                     for d in range(n):
                         for e in range(n):
                             for f in range(n):
-                                for g in range(n):
-                                    for h in range(n):
-                                        gate2x2[0][0]=grid[0][a] + grid[1][b]*1j
-                                        gate2x2[0][1]=grid[2][c] + grid[3][d]*1j
-                                        gate2x2[1][0]=grid[4][e] + grid[5][f]*1j
-                                        gate2x2[1][1]=grid[6][g] + grid[7][h]*1j
-                                        gate2x2 = gate2x2 + np.conjugate(gate2x2.transpose())                                        
-                                        gate4x4=np.kron(I,gate2x2) # for qubit 0
-                                        rho4x4 = evolverho(rhobefore,gate4x4)
-                                        counter+=1                                
-                                        dist=0.
-                                        for x in range(4):
-                                            for w in range(4):
-                                                dist += abs(rho4x4[x][w]-vectorfind[x][w])
-                                        if dist<mindist:
-                                            
-                                            best=[a,b,c,d,e,f,g,h]
-                                            mindist=dist
-                                            if distbreak > -1:
-                                                if mindist < distbreak:
-                                                    return gate2x2,mindist,best
+                                gate2x2[0][0]=grid[0][a] 
+                                gate2x2[0][1]=grid[1][b] + grid[2][c]*1j
+                                gate2x2[1][0]=grid[3][d] + grid[4][e]*1j
+                                gate2x2[1][1]=grid[5][f] 
+                                
+                                gate2x2=closest_unitary(gate2x2)                                 
+                                 # make 4x4 for qbit 0
+                                gate4x4=np.kron(I,gate2x2)
+                                 # evolve rho
+                                rho4x4 = evolverho(rhobefore,gate4x4)
+                                counter+=1                                                                        
+
+                                dist = np.abs(rho4x4 - rhoafter).sum()
+                                
+                                if dist<mindist:
+                                    
+                                    best=[a,b,c,d,e,f]
+                                    mindist=dist
+                                    if distbreak > -1:
+                                        if mindist < distbreak:
+                                            return gate2x2,mindist,best
 
 
-        gate2x2[0][0]=grid[0][best[0]] + grid[1][best[1]]*1j
-        gate2x2[0][1]=grid[2][best[2]] + grid[3][best[3]]*1j
-        gate2x2[1][0]=grid[4][best[4]] + grid[5][best[5]]*1j
-        gate2x2[1][1]=grid[6][best[6]] + grid[7][best[7]]*1j
-        gate2x2 = gate2x2 + np.conjugate(gate2x2.transpose())                        
+        gate2x2[0][0]=grid[0][best[0]] 
+        gate2x2[0][1]=grid[1][best[1]] + grid[2][best[2]]*1j
+        gate2x2[1][0]=grid[3][best[3]] + grid[4][best[4]]*1j
+        gate2x2[1][1]=grid[5][best[5]] 
+        gate2x2=closest_unitary(gate2x2)                                 
 
         return gate2x2,mindist,best
 
@@ -156,8 +173,6 @@ class gatefinder:
                 return
         print("end search by zoom limit 100")
 
-def is_pos_def(x):
-    return np.all(np.linalg.eigvals(x) > 0)
 
 
 def testgate2x2(gate2x2,rhobefore,rhoafter):
@@ -166,17 +181,19 @@ def testgate2x2(gate2x2,rhobefore,rhoafter):
     resrho=evolverho(np.copy(rhobefore),gate4x4)
     CompareRHOS(resrho.flatten(),rhoafter.flatten(),np.arange(16))
 
-##gate2x2 = [[ 0.69724107-0.00744126j, -0.34607115-0.01072917j],
-##           [ 0.03870212+0.722417j,   -0.17429961+0.82169682j]]
-##gate2x2= np.array(gate2x2,dtype=np.complex128)
-##gate2x2 = gate2x2 + np.conjugate(gate2x2.transpose())
-##print(gate2x2)
 
-
+                
 
 idxrho=1
-seed=5
-rhobefore,rhoafter = testfinderhos(seed=seed, idxrho=idxrho) # cx (0,1) get rho 1 = [0,2]
+#seed=5
+seed=7
+rhobefore,rhoafter = testfinderhos(seed=seed, idxrho=idxrho) # cx (0,1) get rho 1 = [0,2
+
+
+##sv = random_statevector(4,1)
+##rhobefore=DensityMatrix(sv).data
+##rhoafter= evolverho(np.copy(rhobefore),cxgate(control=0))
+
 print("seed =",seed,"idxrho = ",idxrho)
 print("rhobefore hermitian = ",is_hermitian(rhobefore),"\ttrace=",np.trace(rhobefore),"\tis_pos_def",is_pos_def(rhobefore))
 print("rhoafter hermitian = ",is_hermitian(rhoafter),"\ttrace=",np.trace(rhoafter),"\tis_pos_def",is_pos_def(rhoafter))
@@ -186,15 +203,16 @@ print("rhoafter hermitian = ",is_hermitian(rhoafter),"\ttrace=",np.trace(rhoafte
 ##    #  is not positive semidefinite or not hermitian or trace not 1
 ##    print('Failed validate_density_matrix: ' + str(e))
 
-#testgate2x2(gate2x2,rhobefore,rhoafter)
 
-
-##sv = random_statevector(4,1)
-##rhobefore=DensityMatrix(sv).data
-##rhoafter= evolverho(np.copy(rhobefore),cxgate(control=0))
 gf= gatefinder()        
 resgate2x2= gf.search(rhobefore,rhoafter,0.00001)
+
+##resgate2x2 =np.array( [[1.00000000e+00+1.77448355e-17j, 9.01055114e-17+1.31939093e-16j],
+##              [1.11022302e-16+0.00000000e+00j, 1.00000000e+00+0.00000000e+00j]], dtype=np.complex128)
+ 
 print("seed",seed,"idxrho",idxrho)
+print("resgate2x2\n",resgate2x2)
 testgate2x2(resgate2x2,rhobefore,rhoafter)
+
 
 
